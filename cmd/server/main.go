@@ -95,6 +95,7 @@ func main() {
 			licenseRoutes.POST("", licenseHandler.Create)
 			licenseRoutes.GET("", licenseHandler.List)
 			licenseRoutes.GET("/:id", licenseHandler.GetByID)
+			licenseRoutes.PATCH("/:id", licenseHandler.Update)
 			licenseRoutes.PATCH("/:id/status", licenseHandler.UpdateStatus)
 		}
 	}

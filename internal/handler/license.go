@@ -159,3 +159,47 @@ func (h *LicenseHandler) UpdateStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "License status updated successfully"})
 
 }
+
+func (h *LicenseHandler) Update(c *gin.Context) {
+	idStr := c.Param("id")
+	h.logger.Debug("Received request to update license", zap.String("id_param", idStr))
+
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid UUID format for update", zap.String("id_param", idStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid license ID format"})
+		return
+	}
+
+	var req dto.UpdateLicenseRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Failed to bind or validate update request body", zap.String("id", idStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		return
+	}
+
+	updatedLicense, err := h.service.UpdateLicense(c.Request.Context(), id, &req)
+	if err != nil {
+
+		if errors.Is(err, license.ErrNotFound) {
+			h.logger.Info("License not found for update by handler", zap.String("id", idStr))
+			c.JSON(http.StatusNotFound, gin.H{"error": "License not found"})
+			return
+		}
+
+		if errors.Is(err, license.ErrUpdateFailed) {
+			h.logger.Error("Repository failed to update license", zap.String("id", idStr), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update license data"})
+			return
+		}
+
+		h.logger.Error("Service failed to update license", zap.String("id", idStr), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update license"})
+		return
+	}
+
+	h.logger.Info("License updated successfully via handler", zap.String("id", idStr))
+	responseDTO := dto.NewLicenseResponse(updatedLicense)
+	c.JSON(http.StatusOK, responseDTO)
+}

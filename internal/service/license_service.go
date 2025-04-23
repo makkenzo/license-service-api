@@ -150,3 +150,69 @@ func (s *LicenseService) UpdateLicenseStatus(ctx context.Context, id uuid.UUID, 
 
 	return nil
 }
+
+func (s *LicenseService) UpdateLicense(ctx context.Context, id uuid.UUID, req *dto.UpdateLicenseRequest) (*license.License, error) {
+	s.logger.Debug("Attempting to update license", zap.String("id", id.String()))
+
+	currentLicense, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, license.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			s.logger.Warn("License not found for update", zap.String("id", id.String()))
+			return nil, license.ErrNotFound
+		}
+		s.logger.Error("Failed to get current license for update", zap.String("id", id.String()), zap.Error(err))
+		return nil, fmt.Errorf("repository error fetching license %s for update: %w", id, err)
+	}
+
+	updated := false
+
+	if req.Type != nil && currentLicense.Type != *req.Type {
+		currentLicense.Type = *req.Type
+		updated = true
+	}
+	if req.ProductName != nil && currentLicense.ProductName != *req.ProductName {
+		currentLicense.ProductName = *req.ProductName
+		updated = true
+	}
+
+	if req.CustomerName != nil {
+
+		if !currentLicense.CustomerName.Valid || currentLicense.CustomerName.String != *req.CustomerName {
+			currentLicense.CustomerName = sql.NullString{String: *req.CustomerName, Valid: true}
+			updated = true
+		}
+	}
+	if req.CustomerEmail != nil {
+		if !currentLicense.CustomerEmail.Valid || currentLicense.CustomerEmail.String != *req.CustomerEmail {
+			currentLicense.CustomerEmail = sql.NullString{String: *req.CustomerEmail, Valid: true}
+			updated = true
+		}
+	}
+	if req.ExpiresAt != nil {
+		if !currentLicense.ExpiresAt.Valid || !currentLicense.ExpiresAt.Time.Equal(*req.ExpiresAt) {
+			currentLicense.ExpiresAt = sql.NullTime{Time: *req.ExpiresAt, Valid: true}
+			updated = true
+		}
+	}
+
+	if req.Metadata != nil {
+
+		currentLicense.Metadata = req.Metadata
+		updated = true
+	}
+
+	if !updated {
+		s.logger.Info("No fields to update for license", zap.String("id", id.String()))
+		return currentLicense, nil
+	}
+
+	err = s.repo.Update(ctx, currentLicense)
+	if err != nil {
+
+		s.logger.Error("Repository failed to update license", zap.String("id", id.String()), zap.Error(err))
+		return nil, fmt.Errorf("repository error updating license %s: %w", id, err)
+	}
+
+	s.logger.Info("License updated successfully in service", zap.String("id", id.String()))
+	return currentLicense, nil
+}

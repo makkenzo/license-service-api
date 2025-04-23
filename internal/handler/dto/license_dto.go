@@ -77,6 +77,15 @@ type PaginatedLicenseResponse struct {
 	Offset     int                `json:"offset"`
 }
 
+type UpdateLicenseRequest struct {
+	Type          *string         `json:"type"`
+	CustomerName  *string         `json:"customer_name"`
+	CustomerEmail *string         `json:"customer_email" binding:"omitempty,email"`
+	ProductName   *string         `json:"product_name"`
+	Metadata      json.RawMessage `json:"metadata" swaggertype:"object"`
+	ExpiresAt     *time.Time      `json:"expires_at" binding:"omitempty,gt"`
+}
+
 type UpdateLicenseStatusRequest struct {
 	Status *license.LicenseStatus `json:"status" binding:"required,oneof=pending active inactive expired revoked"`
 }
