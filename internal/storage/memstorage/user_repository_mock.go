@@ -2,12 +2,12 @@ package memstorage
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
 	"github.com/makkenzo/license-service-api/internal/domain/user"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -15,8 +15,6 @@ type UserRepositoryMock struct {
 	mu    sync.RWMutex
 	users map[string]*user.User
 }
-
-var ErrUserNotFound = errors.New("user not found")
 
 func NewUserRepositoryMock() *UserRepositoryMock {
 	repo := &UserRepositoryMock{
@@ -43,7 +41,7 @@ func (r *UserRepositoryMock) FindByUsername(ctx context.Context, username string
 
 	u, ok := r.users[strings.ToLower(username)]
 	if !ok {
-		return nil, ErrUserNotFound
+		return nil, ierr.ErrUserNotFound
 	}
 
 	userCopy := *u

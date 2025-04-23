@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/makkenzo/license-service-api/internal/domain/license"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"go.uber.org/zap"
 )
 
@@ -329,7 +330,7 @@ func (r *LicenseRepository) UpdateStatus(ctx context.Context, id uuid.UUID, stat
 			zap.Error(err),
 		)
 
-		return fmt.Errorf("%w: error updating status for license %s: %v", license.ErrUpdateFailed, id, err)
+		return fmt.Errorf("%w: error updating status for license %s: %v", ierr.ErrUpdateFailed, id, err)
 	}
 
 	if cmdTag.RowsAffected() == 0 {
@@ -337,7 +338,7 @@ func (r *LicenseRepository) UpdateStatus(ctx context.Context, id uuid.UUID, stat
 			zap.String("id", id.String()),
 			zap.String("new_status", string(status)),
 		)
-		return license.ErrNotFound
+		return ierr.ErrNotFound
 	}
 
 	r.logger.Info("License status updated successfully",

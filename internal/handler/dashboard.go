@@ -36,7 +36,7 @@ func (h *DashboardHandler) GetSummary(c *gin.Context) {
 	if err != nil {
 
 		h.logger.Error("Failed to get dashboard summary from service", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve dashboard summary"})
+		_ = c.Error(err)
 		return
 	}
 

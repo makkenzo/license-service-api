@@ -2,7 +2,6 @@ package license
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,9 +38,3 @@ type Repository interface {
 	Update(ctx context.Context, license *License) error
 	GetDashboardSummary(ctx context.Context, expiringPeriodDays int) (*DashboardSummaryData, error)
 }
-
-var (
-	ErrNotFound     = errors.New("license not found")
-	ErrDuplicateKey = errors.New("license key already exists")
-	ErrUpdateFailed = errors.New("license update failed")
-)

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/service"
 	"go.uber.org/zap"
 )
@@ -34,20 +35,20 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Failed to bind login request", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username and password are required"})
+		_ = c.Error(err)
 		return
 	}
 
 	token, err := h.service.Login(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidCredentials) {
+		if errors.Is(err, ierr.ErrInvalidCredentials) {
 			h.logger.Info("Invalid login attempt", zap.String("username", req.Username))
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
 			return
 		}
 
 		h.logger.Error("Login service failed", zap.String("username", req.Username), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Login failed"})
+		_ = c.Error(err)
 		return
 	}
 

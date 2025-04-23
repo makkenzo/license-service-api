@@ -9,6 +9,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/makkenzo/license-service-api/internal/config"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/storage/memstorage"
 	"go.uber.org/zap"
 )
@@ -33,22 +34,14 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-var (
-	ErrInvalidCredentials = errors.New("invalid username or password")
-	ErrInvalidToken       = errors.New("invalid or expired token")
-	ErrTokenParsingFailed = errors.New("failed to parse token")
-	ErrTokenNoClaims      = errors.New("token contains no claims")
-	ErrTokenInvalidClaims = errors.New("token contains invalid claims type")
-)
-
 func (s *AuthService) Login(ctx context.Context, username, password string) (string, error) {
 	s.logger.Info("Attempting login", zap.String("username", username))
 
 	u, err := s.userRepo.FindByUsername(ctx, username)
 	if err != nil {
-		if errors.Is(err, memstorage.ErrUserNotFound) {
+		if errors.Is(err, ierr.ErrUserNotFound) {
 			s.logger.Warn("Login failed: user not found", zap.String("username", username))
-			return "", ErrInvalidCredentials
+			return "", ierr.ErrInvalidCredentials
 		}
 		s.logger.Error("Error finding user during login", zap.String("username", username), zap.Error(err))
 		return "", fmt.Errorf("internal error during login: %w", err)
@@ -56,7 +49,7 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (str
 
 	if !memstorage.CheckPassword(u.PasswordHash, password) {
 		s.logger.Warn("Login failed: invalid password", zap.String("username", username))
-		return "", ErrInvalidCredentials
+		return "", ierr.ErrInvalidCredentials
 	}
 
 	expirationTime := time.Now().Add(s.jwtConfig.TokenTTL)
@@ -100,28 +93,28 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenString string) (*C
 	if err != nil {
 		s.logger.Warn("Failed to parse JWT token", zap.Error(err))
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, ErrInvalidToken
+			return nil, ierr.ErrInvalidToken
 		}
 		if errors.Is(err, jwt.ErrSignatureInvalid) {
-			return nil, ErrInvalidToken
+			return nil, ierr.ErrInvalidToken
 		}
-		return nil, ErrTokenParsingFailed
+		return nil, ierr.ErrTokenParsingFailed
 	}
 
 	if !token.Valid {
 		s.logger.Warn("Invalid token received")
-		return nil, ErrInvalidToken
+		return nil, ierr.ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
 		s.logger.Error("Token claims are not of expected type")
-		return nil, ErrTokenInvalidClaims
+		return nil, ierr.ErrTokenInvalidClaims
 	}
 
 	if claims == nil {
 		s.logger.Error("Token claims are nil after parsing")
-		return nil, ErrTokenNoClaims
+		return nil, ierr.ErrTokenNoClaims
 	}
 
 	s.logger.Debug("Token validated successfully", zap.String("user_id", claims.UserID.String()))

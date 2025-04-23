@@ -16,6 +16,7 @@ import (
 	"github.com/makkenzo/license-service-api/internal/config"
 	"github.com/makkenzo/license-service-api/internal/handler"
 	"github.com/makkenzo/license-service-api/internal/handler/middleware"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/service"
 	"github.com/makkenzo/license-service-api/internal/storage/memstorage"
 	"github.com/makkenzo/license-service-api/internal/storage/postgres"
@@ -23,6 +24,7 @@ import (
 	"github.com/makkenzo/license-service-api/internal/storage/redis"
 	"github.com/makkenzo/license-service-api/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -66,6 +68,10 @@ func main() {
 	licenseService := service.NewLicenseService(licenseRepo, appLogger)
 	authService := service.NewAuthService(userRepoMock, &cfg.JWT, appLogger)
 
+	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
+	apiKeyAuthMiddleware := middleware.APIKeyAuthMiddleware(apiKeyRepo, appLogger)
+	errorMiddleware := middleware.ErrorHandlerMiddleware(appLogger)
+
 	router := gin.New()
 
 	router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
@@ -83,19 +89,24 @@ func main() {
 	}))
 
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		logMsg := "Panic recovered"
 		if err, ok := recovered.(string); ok {
-			sugarLogger.Errorf("Panic recovered: %s", err)
+			logMsg = fmt.Sprintf("%s: %s", logMsg, err)
+		} else if err, ok := recovered.(error); ok {
+			logMsg = fmt.Sprintf("%s: %v", logMsg, err)
 		}
-		c.AbortWithStatus(http.StatusInternalServerError)
+		appLogger.Error(logMsg, zap.Stack("stack"))
+
+		_ = c.Error(ierr.ErrInternalServer)
+		c.Abort()
 	}))
+
+	router.Use(errorMiddleware)
 
 	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
 	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
 	authHandler := handler.NewAuthHandler(authService, appLogger)
 	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
-
-	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
-	apiKeyAuthMiddleware := middleware.APIKeyAuthMiddleware(apiKeyRepo, appLogger)
 
 	router.GET("/healthz", healthHandler.Check)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))

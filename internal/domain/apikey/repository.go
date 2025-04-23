@@ -2,13 +2,10 @@ package apikey
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
-
-var ErrAPIKeyNotFound = errors.New("api key not found or disabled")
 
 type Repository interface {
 	FindByPrefix(ctx context.Context, prefix string) (*APIKey, error)

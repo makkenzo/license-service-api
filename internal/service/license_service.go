@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/makkenzo/license-service-api/internal/domain/license"
 	"github.com/makkenzo/license-service-api/internal/handler/dto"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"go.uber.org/zap"
 )
 
@@ -119,9 +120,9 @@ func (s *LicenseService) GetLicenseByID(ctx context.Context, id uuid.UUID) (*lic
 
 	lic, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, license.ErrNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ierr.ErrNotFound) {
 			s.logger.Info("License not found by ID", zap.String("id", id.String()))
-			return nil, license.ErrNotFound
+			return nil, ierr.ErrNotFound
 		}
 		s.logger.Error("Failed to get license by ID from repository", zap.String("id", id.String()), zap.Error(err))
 		return nil, fmt.Errorf("repository error fetching license by ID %s: %w", id, err)
@@ -139,7 +140,7 @@ func (s *LicenseService) UpdateLicenseStatus(ctx context.Context, id uuid.UUID, 
 	err := s.repo.UpdateStatus(ctx, id, newStatus)
 	if err != nil {
 
-		if errors.Is(err, license.ErrNotFound) || errors.Is(err, license.ErrUpdateFailed) {
+		if errors.Is(err, ierr.ErrNotFound) || errors.Is(err, ierr.ErrUpdateFailed) {
 			return err
 		}
 
@@ -159,9 +160,9 @@ func (s *LicenseService) UpdateLicense(ctx context.Context, id uuid.UUID, req *d
 
 	currentLicense, err := s.repo.FindByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, license.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, ierr.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			s.logger.Warn("License not found for update", zap.String("id", id.String()))
-			return nil, license.ErrNotFound
+			return nil, ierr.ErrNotFound
 		}
 		s.logger.Error("Failed to get current license for update", zap.String("id", id.String()), zap.Error(err))
 		return nil, fmt.Errorf("repository error fetching license %s for update: %w", id, err)
@@ -237,7 +238,7 @@ func (s *LicenseService) ValidateLicense(ctx context.Context, req *dto.ValidateL
 
 	lic, err := s.repo.FindByKey(ctx, req.LicenseKey)
 	if err != nil {
-		if errors.Is(err, license.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, ierr.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			s.logger.Info("License key not found during validation", zap.String("license_key", req.LicenseKey))
 			result.Reason = "not_found"
 			return result, nil

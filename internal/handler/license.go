@@ -6,9 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/makkenzo/license-service-api/internal/domain/license"
 	"github.com/makkenzo/license-service-api/internal/handler/dto"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/service"
 	"go.uber.org/zap"
 )
@@ -32,7 +31,7 @@ func (h *LicenseHandler) Create(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Failed to bind or validate request body", zap.Error(err))
 
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		_ = c.Error(err)
 		return
 	}
 
@@ -40,18 +39,11 @@ func (h *LicenseHandler) Create(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Service failed to create license", zap.Error(err))
 
-		if errors.Is(err, pgx.ErrNoRows) {
-
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal error after creating license"})
-			return
-		}
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create license"})
+		_ = c.Error(err)
 		return
 	}
 
 	h.logger.Info("License created successfully via handler", zap.String("id", createdLicense.ID.String()))
-
 	responseDTO := dto.NewLicenseResponse(createdLicense)
 	c.JSON(http.StatusCreated, responseDTO)
 }
@@ -62,14 +54,14 @@ func (h *LicenseHandler) List(c *gin.Context) {
 
 	if err := c.ShouldBindQuery(&req); err != nil {
 		h.logger.Warn("Failed to bind or validate query parameters", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid query parameters: " + err.Error()})
+		_ = c.Error(err)
 		return
 	}
 
 	licenses, totalCount, err := h.service.ListLicenses(c.Request.Context(), &req)
 	if err != nil {
 		h.logger.Error("Service failed to list licenses", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve licenses"})
+		_ = c.Error(err)
 		return
 	}
 
@@ -95,20 +87,20 @@ func (h *LicenseHandler) GetByID(c *gin.Context) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		h.logger.Warn("Invalid UUID format received", zap.String("id_param", idStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid license ID format"})
+		_ = c.Error(err)
 		return
 	}
 
 	lic, err := h.service.GetLicenseByID(c.Request.Context(), id)
 	if err != nil {
-		if errors.Is(err, license.ErrNotFound) {
+		if errors.Is(err, ierr.ErrNotFound) {
 			h.logger.Info("License not found by handler", zap.String("id", idStr))
-			c.JSON(http.StatusNotFound, gin.H{"error": "License not found"})
+			_ = c.Error(err)
 			return
 		}
 
 		h.logger.Error("Service failed to get license by ID", zap.String("id", idStr), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve license"})
+		_ = c.Error(err)
 		return
 	}
 
@@ -124,33 +116,33 @@ func (h *LicenseHandler) UpdateStatus(c *gin.Context) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		h.logger.Warn("Invalid UUID format for status update", zap.String("id_param", idStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid license ID format"})
+		_ = c.Error(err)
 		return
 	}
 
 	var req dto.UpdateLicenseStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Failed to bind or validate status update request body", zap.String("id", idStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		_ = c.Error(err)
 		return
 	}
 
 	err = h.service.UpdateLicenseStatus(c.Request.Context(), id, *req.Status)
 	if err != nil {
 
-		if errors.Is(err, license.ErrNotFound) {
+		if errors.Is(err, ierr.ErrNotFound) {
 			h.logger.Info("License not found for status update", zap.String("id", idStr))
-			c.JSON(http.StatusNotFound, gin.H{"error": "License not found"})
+			_ = c.Error(err)
 			return
 		}
-		if errors.Is(err, license.ErrUpdateFailed) {
+		if errors.Is(err, ierr.ErrUpdateFailed) {
 			h.logger.Error("Repository failed to update license status", zap.String("id", idStr), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update license status"})
+			_ = c.Error(err)
 			return
 		}
 
 		h.logger.Error("Service failed to update license status", zap.String("id", idStr), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update license status"})
+		_ = c.Error(err)
 		return
 	}
 
@@ -167,7 +159,7 @@ func (h *LicenseHandler) Update(c *gin.Context) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		h.logger.Warn("Invalid UUID format for update", zap.String("id_param", idStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid license ID format"})
+		_ = c.Error(err)
 		return
 	}
 
@@ -175,27 +167,27 @@ func (h *LicenseHandler) Update(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Failed to bind or validate update request body", zap.String("id", idStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		_ = c.Error(err)
 		return
 	}
 
 	updatedLicense, err := h.service.UpdateLicense(c.Request.Context(), id, &req)
 	if err != nil {
 
-		if errors.Is(err, license.ErrNotFound) {
+		if errors.Is(err, ierr.ErrNotFound) {
 			h.logger.Info("License not found for update by handler", zap.String("id", idStr))
-			c.JSON(http.StatusNotFound, gin.H{"error": "License not found"})
+			_ = c.Error(err)
 			return
 		}
 
-		if errors.Is(err, license.ErrUpdateFailed) {
+		if errors.Is(err, ierr.ErrUpdateFailed) {
 			h.logger.Error("Repository failed to update license", zap.String("id", idStr), zap.Error(err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update license data"})
+			_ = c.Error(err)
 			return
 		}
 
 		h.logger.Error("Service failed to update license", zap.String("id", idStr), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update license"})
+		_ = c.Error(err)
 		return
 	}
 
@@ -210,7 +202,7 @@ func (h *LicenseHandler) Validate(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Failed to bind or validate validation request body", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		_ = c.Error(err)
 		return
 	}
 
@@ -218,7 +210,7 @@ func (h *LicenseHandler) Validate(c *gin.Context) {
 	if err != nil {
 
 		h.logger.Error("Service failed during license validation", zap.String("license_key", req.LicenseKey), zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate license"})
+		_ = c.Error(err)
 		return
 	}
 

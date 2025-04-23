@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/makkenzo/license-service-api/internal/domain/apikey"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"go.uber.org/zap"
 )
 
@@ -55,7 +56,7 @@ func (r *APIKeyRepository) FindByPrefix(ctx context.Context, prefix string) (*ap
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Debug("API key not found or disabled by prefix", zap.String("prefix", prefix))
-			return nil, apikey.ErrAPIKeyNotFound
+			return nil, ierr.ErrAPIKeyNotFound
 		}
 		r.logger.Error("Failed to find api key by prefix", zap.String("prefix", prefix), zap.Error(err))
 		return nil, fmt.Errorf("db error finding api key: %w", err)
