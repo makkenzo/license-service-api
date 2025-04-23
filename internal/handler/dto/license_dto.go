@@ -76,3 +76,7 @@ type PaginatedLicenseResponse struct {
 	Limit      int                `json:"limit"`
 	Offset     int                `json:"offset"`
 }
+
+type UpdateLicenseStatusRequest struct {
+	Status *license.LicenseStatus `json:"status" binding:"required,oneof=pending active inactive expired revoked"`
+}

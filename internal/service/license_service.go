@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/makkenzo/license-service-api/internal/domain/license"
 	"github.com/makkenzo/license-service-api/internal/handler/dto"
 	"go.uber.org/zap"
@@ -107,4 +109,44 @@ func (s *LicenseService) ListLicenses(ctx context.Context, req *dto.ListLicenses
 
 	s.logger.Info("Licenses listed successfully", zap.Int("count", len(licenses)), zap.Int64("total", totalCount))
 	return licenses, totalCount, nil
+}
+
+func (s *LicenseService) GetLicenseByID(ctx context.Context, id uuid.UUID) (*license.License, error) {
+	s.logger.Debug("Attempting to get license by ID", zap.String("id", id.String()))
+
+	lic, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, license.ErrNotFound) {
+			s.logger.Info("License not found by ID", zap.String("id", id.String()))
+			return nil, license.ErrNotFound
+		}
+		s.logger.Error("Failed to get license by ID from repository", zap.String("id", id.String()), zap.Error(err))
+		return nil, fmt.Errorf("repository error fetching license by ID %s: %w", id, err)
+	}
+	s.logger.Info("License retrieved successfully by ID", zap.String("id", id.String()))
+	return lic, nil
+}
+
+func (s *LicenseService) UpdateLicenseStatus(ctx context.Context, id uuid.UUID, newStatus license.LicenseStatus) error {
+	s.logger.Info("Attempting to update license status",
+		zap.String("id", id.String()),
+		zap.String("new_status", string(newStatus)),
+	)
+
+	err := s.repo.UpdateStatus(ctx, id, newStatus)
+	if err != nil {
+
+		if errors.Is(err, license.ErrNotFound) || errors.Is(err, license.ErrUpdateFailed) {
+			return err
+		}
+
+		return fmt.Errorf("repository error updating status for license %s: %w", id, err)
+	}
+
+	s.logger.Info("License status update successful in service",
+		zap.String("id", id.String()),
+		zap.String("new_status", string(newStatus)),
+	)
+
+	return nil
 }

@@ -315,3 +315,32 @@ func (r *LicenseRepository) scanLicense(row pgx.Row) (*license.License, error) {
 
 	return &lic, nil
 }
+
+func (r *LicenseRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status license.LicenseStatus) error {
+	query := `UPDATE licenses SET status = $1 WHERE id = $2`
+
+	cmdTag, err := r.db.Exec(ctx, query, status, id)
+	if err != nil {
+		r.logger.Error("Failed to update license status in database",
+			zap.String("id", id.String()),
+			zap.String("new_status", string(status)),
+			zap.Error(err),
+		)
+
+		return fmt.Errorf("%w: error updating status for license %s: %v", license.ErrUpdateFailed, id, err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to update status, but license was not found",
+			zap.String("id", id.String()),
+			zap.String("new_status", string(status)),
+		)
+		return license.ErrNotFound
+	}
+
+	r.logger.Info("License status updated successfully",
+		zap.String("id", id.String()),
+		zap.String("new_status", string(status)),
+	)
+	return nil
+}

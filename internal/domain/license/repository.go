@@ -23,10 +23,12 @@ type Repository interface {
 	FindByID(ctx context.Context, id uuid.UUID) (*License, error)
 	FindByKey(ctx context.Context, key string) (*License, error)
 	List(ctx context.Context, params ListParams) ([]*License, int64, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status LicenseStatus) error
 	Update(ctx context.Context, license *License) error
 }
 
 var (
 	ErrNotFound     = errors.New("license not found")
 	ErrDuplicateKey = errors.New("license key already exists")
+	ErrUpdateFailed = errors.New("license update failed")
 )
