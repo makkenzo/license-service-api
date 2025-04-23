@@ -22,9 +22,11 @@ import (
 	"github.com/makkenzo/license-service-api/internal/storage/postgres"
 	apikeyRepoImpl "github.com/makkenzo/license-service-api/internal/storage/postgres"
 	"github.com/makkenzo/license-service-api/internal/storage/redis"
+	"github.com/makkenzo/license-service-api/internal/worker"
 	"github.com/makkenzo/license-service-api/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
@@ -137,6 +139,8 @@ func main() {
 		}
 	}
 
+	eg, appCtx := errgroup.WithContext(context.Background())
+
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      router,
@@ -145,25 +149,54 @@ func main() {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
-	go func() {
+	eg.Go(func() error {
 		sugarLogger.Infof("HTTP server listening on port %s", cfg.Server.Port)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			sugarLogger.Fatalf("Failed to start HTTP server: %v", err)
+			sugarLogger.Errorf("Failed to start HTTP server: %v", err)
+			return fmt.Errorf("http server error: %w", err)
 		}
-	}()
+		sugarLogger.Info("HTTP server stopped.")
+		return nil
+	})
+
+	workerErrChan, workerShutdown := worker.RunWorkers(cfg, licenseRepo, appLogger)
+	eg.Go(func() error {
+		select {
+		case err := <-workerErrChan:
+			sugarLogger.Error("Asynq worker failed", zap.Error(err))
+			return fmt.Errorf("asynq worker error: %w", err)
+		case <-appCtx.Done():
+			sugarLogger.Info("Asynq worker context cancelled")
+			return nil
+		}
+	})
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
 
-	sugarLogger.Info("Shutting down server...")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownPeriod)
-	defer cancel()
-
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		sugarLogger.Fatalf("Server forced to shutdown: %v", err)
+	select {
+	case sig := <-quit:
+		sugarLogger.Infof("Received signal %s, shutting down gracefully...", sig)
+	case <-appCtx.Done():
+		sugarLogger.Warn("Context done, shutting down due to error...")
 	}
 
-	sugarLogger.Info("Server exiting")
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.Server.ShutdownPeriod)
+	defer cancelShutdown()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		sugarLogger.Errorf("HTTP server shutdown failed: %v", err)
+	} else {
+		sugarLogger.Info("HTTP server shutdown complete.")
+	}
+
+	workerShutdown(shutdownCtx)
+	sugarLogger.Info("Asynq workers shutdown complete.")
+
+	if err := eg.Wait(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		sugarLogger.Errorf("Application shutdown finished with error: %v", err)
+		os.Exit(1)
+	}
+
+	sugarLogger.Info("Application shutdown complete.")
 }
