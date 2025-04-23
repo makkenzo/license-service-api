@@ -1,0 +1,31 @@
+openapi: 3.0.3
+info:
+  title: License Service API
+  version: 1.0.0
+  description: |-
+    API for managing software licenses for various products.
+    Provides endpoints for creating, retrieving, updating, and deleting licenses.
+  termsOfService: https://swagger.io/terms/
+  contact:
+    name: Metalogic
+    url: https://metalogic.kz
+    email: support@metalogic.kz
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+  - url: license.metalogic.kz/api/v1
+    description: Production server
+
+tags:
+  - name: licenses
+    description: Operations related to license management
+
+paths: {}
+
+components:
+  schemas: {}
+  securitySchemes: {}
