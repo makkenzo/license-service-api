@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/makkenzo/license-service-api/internal/config"
 	"github.com/makkenzo/license-service-api/internal/handler"
+	"github.com/makkenzo/license-service-api/internal/service"
 	"github.com/makkenzo/license-service-api/internal/storage/postgres"
 	"github.com/makkenzo/license-service-api/internal/storage/redis"
 	"github.com/makkenzo/license-service-api/pkg/logger"
@@ -55,6 +56,9 @@ func main() {
 	}
 	defer redisClient.Close()
 
+	licenseRepo := postgres.NewLicenseRepository(dbPool, appLogger)
+	licenseService := service.NewLicenseService(licenseRepo, appLogger)
+
 	router := gin.New()
 
 	router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
@@ -79,9 +83,18 @@ func main() {
 	}))
 
 	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
-	router.GET("/healthz", healthHandler.Check)
+	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
 
+	router.GET("/healthz", healthHandler.Check)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
+	apiV1 := router.Group("/api/v1")
+	{
+		licenseRoutes := apiV1.Group("/licenses")
+		{
+			licenseRoutes.POST("", licenseHandler.Create)
+		}
+	}
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
