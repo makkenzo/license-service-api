@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/makkenzo/license-service-api/internal/config"
 	"github.com/makkenzo/license-service-api/internal/handler"
@@ -49,15 +49,16 @@ func main() {
 	sugarLogger.Info("Starting application...")
 	sugarLogger.Infof("Log level set to: %s", cfg.Log.Level)
 
-	ctx := context.Background()
+	appCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	dbPool, err := postgres.NewPgxPool(ctx, &cfg.Database, appLogger)
+	dbPool, err := postgres.NewPgxPool(appCtx, &cfg.Database, appLogger)
 	if err != nil {
 		sugarLogger.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 	defer dbPool.Close()
 
-	redisClient, err := redis.NewRedisClient(ctx, &cfg.Redis, appLogger)
+	redisClient, err := redis.NewRedisClient(appCtx, &cfg.Redis, appLogger)
 	if err != nil {
 		sugarLogger.Fatalf("Failed to connect to Redis: %v", err)
 	}
@@ -70,12 +71,16 @@ func main() {
 	licenseService := service.NewLicenseService(licenseRepo, appLogger)
 	authService := service.NewAuthService(userRepoMock, &cfg.JWT, appLogger)
 
+	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
+	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
+	authHandler := handler.NewAuthHandler(authService, appLogger)
+	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
+
 	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
 	apiKeyAuthMiddleware := middleware.APIKeyAuthMiddleware(apiKeyRepo, appLogger)
 	errorMiddleware := middleware.ErrorHandlerMiddleware(appLogger)
 
 	router := gin.New()
-
 	router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return fmt.Sprintf("%s - [%s] \"%s %s %s %d %s \"%s\" %s\"\n",
 			param.ClientIP,
@@ -89,7 +94,6 @@ func main() {
 			param.ErrorMessage,
 		)
 	}))
-
 	router.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
 		logMsg := "Panic recovered"
 		if err, ok := recovered.(string); ok {
@@ -103,12 +107,22 @@ func main() {
 		c.Abort()
 	}))
 
+	corsConfig := cors.Config{
+		AllowOrigins: []string{"http://localhost:3000", "http://marchenzo:3000"},
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders: []string{
+			"Origin",
+			"Content-Type",
+			"Accept",
+			"Authorization",
+			"X-API-Key",
+		},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
+	router.Use(cors.New(corsConfig))
 	router.Use(errorMiddleware)
-
-	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
-	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
-	authHandler := handler.NewAuthHandler(authService, appLogger)
-	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
 
 	router.GET("/healthz", healthHandler.Check)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
@@ -139,7 +153,7 @@ func main() {
 		}
 	}
 
-	eg, appCtx := errgroup.WithContext(context.Background())
+	g, groupCtx := errgroup.WithContext(appCtx)
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -149,54 +163,58 @@ func main() {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
-	eg.Go(func() error {
+	g.Go(func() error {
 		sugarLogger.Infof("HTTP server listening on port %s", cfg.Server.Port)
+
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			sugarLogger.Errorf("Failed to start HTTP server: %v", err)
-			return fmt.Errorf("http server error: %w", err)
+			sugarLogger.Errorf("HTTP server ListenAndServe error: %v", err)
+			return fmt.Errorf("http server failed: %w", err)
 		}
-		sugarLogger.Info("HTTP server stopped.")
+		sugarLogger.Info("HTTP server stopped listening.")
 		return nil
 	})
 
-	workerErrChan, workerShutdown := worker.RunWorkers(cfg, licenseRepo, appLogger)
-	eg.Go(func() error {
-		select {
-		case err := <-workerErrChan:
-			sugarLogger.Error("Asynq worker failed", zap.Error(err))
-			return fmt.Errorf("asynq worker error: %w", err)
-		case <-appCtx.Done():
-			sugarLogger.Info("Asynq worker context cancelled")
-			return nil
+	g.Go(func() error {
+		<-groupCtx.Done()
+		sugarLogger.Info("Shutting down HTTP server...")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownPeriod)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			sugarLogger.Errorf("HTTP server graceful shutdown failed: %v", err)
+			return fmt.Errorf("http server shutdown error: %w", err)
 		}
+		sugarLogger.Info("HTTP server shutdown complete.")
+		return nil
 	})
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	g.Go(func() error {
+		if err := worker.RunWorkers(groupCtx, cfg, licenseRepo, appLogger); err != nil {
+			sugarLogger.Error("Asynq worker failed", zap.Error(err))
+			return fmt.Errorf("asynq worker error: %w", err)
+		}
+		sugarLogger.Info("Asynq workers finished gracefully.")
+		return nil
+	})
 
-	select {
-	case sig := <-quit:
-		sugarLogger.Infof("Received signal %s, shutting down gracefully...", sig)
-	case <-appCtx.Done():
-		sugarLogger.Warn("Context done, shutting down due to error...")
-	}
+	sugarLogger.Info("Application started. Waiting for interrupt signal (Ctrl+C) or component error...")
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.Server.ShutdownPeriod)
-	defer cancelShutdown()
+	waitErr := g.Wait()
 
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		sugarLogger.Errorf("HTTP server shutdown failed: %v", err)
+	sugarLogger.Info("Shutdown sequence finished.")
+
+	if waitErr != nil {
+
+		if errors.Is(waitErr, context.Canceled) {
+			sugarLogger.Info("Shutdown reason: Context canceled (likely due to OS signal).")
+		} else if errors.Is(waitErr, http.ErrServerClosed) {
+			sugarLogger.Info("Shutdown reason: HTTP server closed normally.")
+		} else {
+			sugarLogger.Errorf("Application shutdown finished with unexpected error: %v", waitErr)
+		}
 	} else {
-		sugarLogger.Info("HTTP server shutdown complete.")
+		sugarLogger.Info("Application shutdown successfully (all components finished without errors).")
 	}
 
-	workerShutdown(shutdownCtx)
-	sugarLogger.Info("Asynq workers shutdown complete.")
-
-	if err := eg.Wait(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		sugarLogger.Errorf("Application shutdown finished with error: %v", err)
-		os.Exit(1)
-	}
-
-	sugarLogger.Info("Application shutdown complete.")
+	sugarLogger.Info("Application exiting now.")
 }

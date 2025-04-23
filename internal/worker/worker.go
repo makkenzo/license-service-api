@@ -3,103 +3,103 @@ package worker
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/makkenzo/license-service-api/internal/config"
 	"github.com/makkenzo/license-service-api/internal/domain/license"
 	"github.com/makkenzo/license-service-api/internal/tasks"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
-func RunWorkers(cfg *config.Config, repo license.Repository, logger *zap.Logger) (<-chan error, func(context.Context)) {
-	errChan := make(chan error, 2)
-
+func RunWorkers(ctx context.Context, cfg *config.Config, repo license.Repository, logger *zap.Logger) error {
 	redisConnOpts := asynq.RedisClientOpt{
 		Addr:     cfg.Redis.Addr,
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
 	}
+	logServer := logger.Named("AsynqServer")
+	logScheduler := logger.Named("AsynqScheduler")
 
 	srv := asynq.NewServer(
 		redisConnOpts,
 		asynq.Config{
 			Concurrency: 10,
-			Queues: map[string]int{
-				"critical": 6,
-				"default":  3,
-				"low":      1,
-			},
+			Queues:      map[string]int{"critical": 6, "default": 3, "low": 1},
 			ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
-				log := logger.Named("AsynqServerErrorHandler")
-				log.Error("Asynq task processing failed",
+				logServer.Error("Asynq task processing failed",
 					zap.String("task_id", task.Type()),
 					zap.ByteString("payload", task.Payload()),
 					zap.Error(err),
 				)
-
 			}),
-			Logger: NewAsynqLoggerAdapter(logger.Named("AsynqServer")),
+			Logger: NewAsynqLoggerAdapter(logServer),
+
+			ShutdownTimeout: 30 * time.Second,
 		},
 	)
-
 	mux := asynq.NewServeMux()
-
 	expireHandler := tasks.NewLicenseExpireHandler(repo, logger)
 	mux.HandleFunc(tasks.TypeLicenseExpire, expireHandler.ProcessTask)
-
-	go func() {
-		logger.Info("Starting Asynq Server...")
-		if err := srv.Run(mux); err != nil {
-			logger.Error("Asynq Server run failed", zap.Error(err))
-			errChan <- fmt.Errorf("asynq server error: %w", err)
-		}
-		logger.Info("Asynq Server stopped.")
-	}()
 
 	scheduler := asynq.NewScheduler(
 		redisConnOpts,
 		&asynq.SchedulerOpts{
-			Logger: NewAsynqLoggerAdapter(logger.Named("AsynqScheduler")),
+			Logger: NewAsynqLoggerAdapter(logScheduler),
 		},
 	)
 
 	licenseExpireTask, err := tasks.NewLicenseExpireTask()
 	if err != nil {
-		logger.Error("Failed to create license expire task for scheduler", zap.Error(err))
-		errChan <- fmt.Errorf("scheduler task creation error: %w", err)
-
-	} else {
-
-		entryID, err := scheduler.Register("@every 1h", licenseExpireTask)
-
-		if err != nil {
-			logger.Error("Could not register periodic task for license expiration", zap.Error(err))
-			errChan <- fmt.Errorf("scheduler registration error: %w", err)
-		} else {
-			logger.Info("Registered periodic license expiration check", zap.String("entry_id", entryID), zap.String("schedule", "@every 1h"))
-		}
+		return fmt.Errorf("scheduler task creation error: %w", err)
 	}
+	entryID, err := scheduler.Register("@every 1h", licenseExpireTask)
+	if err != nil {
+		return fmt.Errorf("scheduler registration error: %w", err)
+	}
+	logger.Info("Registered periodic license expiration check", zap.String("entry_id", entryID), zap.String("schedule", "@every 1h"))
+
+	g, workerCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		logServer.Info("Starting Asynq Server...")
+
+		if err := srv.Run(mux); err != nil {
+			logServer.Error("Asynq Server run failed", zap.Error(err))
+			return fmt.Errorf("asynq server run error: %w", err)
+		}
+		logServer.Info("Asynq Server Run gracefully finished.")
+		return nil
+	})
+
+	g.Go(func() error {
+		logScheduler.Info("Starting Asynq Scheduler...")
+
+		if err := scheduler.Run(); err != nil {
+			logScheduler.Error("Asynq Scheduler run failed", zap.Error(err))
+			return fmt.Errorf("asynq scheduler run error: %w", err)
+		}
+		logScheduler.Info("Asynq Scheduler Run gracefully finished.")
+		return nil
+	})
 
 	go func() {
-		logger.Info("Starting Asynq Scheduler...")
-		if err := scheduler.Run(); err != nil {
-			logger.Error("Asynq Scheduler run failed", zap.Error(err))
-			errChan <- fmt.Errorf("asynq scheduler error: %w", err)
-		}
-		logger.Info("Asynq Scheduler stopped.")
+		<-workerCtx.Done()
+		logScheduler.Info("Shutdown signal received by worker, initiating Asynq shutdown...")
+
+		scheduler.Shutdown()
+		logScheduler.Info("Asynq Scheduler shutdown initiated.")
+
+		srv.Shutdown()
+		logServer.Info("Asynq Server shutdown initiated.")
 	}()
 
-	shutdownFunc := func(ctx context.Context) {
-		logger.Info("Shutting down Asynq Scheduler...")
-		scheduler.Shutdown()
-		logger.Info("Asynq Scheduler stopped.")
+	logger.Info("Asynq workers running...")
 
-		logger.Info("Shutting down Asynq Server...")
-		srv.Shutdown()
-		logger.Info("Asynq Server stopped.")
-	}
-
-	return errChan, shutdownFunc
+	runErr := g.Wait()
+	logger.Info("Asynq workers stopped.")
+	return runErr
 }
 
 type asynqLoggerAdapter struct {
