@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -215,4 +216,75 @@ func (s *LicenseService) UpdateLicense(ctx context.Context, id uuid.UUID, req *d
 
 	s.logger.Info("License updated successfully in service", zap.String("id", id.String()))
 	return currentLicense, nil
+}
+
+type ValidationResult struct {
+	IsValid      bool
+	Reason       string
+	License      *license.License
+	ResponseData json.RawMessage
+}
+
+func (s *LicenseService) ValidateLicense(ctx context.Context, req *dto.ValidateLicenseRequest) (*ValidationResult, error) {
+	s.logger.Info("Attempting to validate license key",
+		zap.String("license_key", req.LicenseKey),
+		zap.String("product_name", req.ProductName),
+	)
+
+	result := &ValidationResult{IsValid: false}
+
+	lic, err := s.repo.FindByKey(ctx, req.LicenseKey)
+	if err != nil {
+		if errors.Is(err, license.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			s.logger.Info("License key not found during validation", zap.String("license_key", req.LicenseKey))
+			result.Reason = "not_found"
+			return result, nil
+		}
+
+		s.logger.Error("Repository error finding license by key during validation", zap.String("license_key", req.LicenseKey), zap.Error(err))
+		return nil, fmt.Errorf("repository error validating key %s: %w", req.LicenseKey, err)
+	}
+
+	result.License = lic
+
+	if lic.ProductName != req.ProductName {
+		s.logger.Warn("License product mismatch during validation",
+			zap.String("license_key", req.LicenseKey),
+			zap.String("expected_product", req.ProductName),
+			zap.String("actual_product", lic.ProductName),
+		)
+		result.Reason = "product_mismatch"
+		return result, nil
+	}
+
+	if lic.Status != license.StatusActive {
+		s.logger.Info("License has non-active status during validation",
+			zap.String("license_key", req.LicenseKey),
+			zap.String("status", string(lic.Status)),
+		)
+		result.Reason = string(lic.Status)
+
+		if lic.Status == license.StatusExpired {
+			result.Reason = "expired"
+		}
+		return result, nil
+	}
+
+	if lic.ExpiresAt.Valid && time.Now().UTC().After(lic.ExpiresAt.Time.UTC()) {
+		s.logger.Info("License has expired (date check)",
+			zap.String("license_key", req.LicenseKey),
+			zap.Time("expires_at", lic.ExpiresAt.Time),
+		)
+		result.Reason = "expired"
+
+		return result, nil
+	}
+
+	s.logger.Info("License validation successful", zap.String("license_key", req.LicenseKey))
+	result.IsValid = true
+	result.Reason = "valid"
+
+	result.ResponseData = lic.Metadata
+
+	return result, nil
 }

@@ -203,3 +203,42 @@ func (h *LicenseHandler) Update(c *gin.Context) {
 	responseDTO := dto.NewLicenseResponse(updatedLicense)
 	c.JSON(http.StatusOK, responseDTO)
 }
+
+func (h *LicenseHandler) Validate(c *gin.Context) {
+	h.logger.Debug("Received request to validate license")
+	var req dto.ValidateLicenseRequest
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Failed to bind or validate validation request body", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		return
+	}
+
+	validationResult, err := h.service.ValidateLicense(c.Request.Context(), &req)
+	if err != nil {
+
+		h.logger.Error("Service failed during license validation", zap.String("license_key", req.LicenseKey), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate license"})
+		return
+	}
+
+	resp := dto.ValidateLicenseResponse{
+		IsValid:     validationResult.IsValid,
+		Reason:      validationResult.Reason,
+		AllowedData: validationResult.ResponseData,
+	}
+
+	if validationResult.License != nil {
+		resp.Status = &validationResult.License.Status
+		if validationResult.License.ExpiresAt.Valid {
+			resp.ExpiresAt = &validationResult.License.ExpiresAt.Time
+		}
+	}
+
+	h.logger.Info("License validation processed",
+		zap.String("license_key", req.LicenseKey),
+		zap.Bool("is_valid", resp.IsValid),
+		zap.String("reason", resp.Reason),
+	)
+	c.JSON(http.StatusOK, resp)
+}

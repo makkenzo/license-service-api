@@ -89,3 +89,18 @@ type UpdateLicenseRequest struct {
 type UpdateLicenseStatusRequest struct {
 	Status *license.LicenseStatus `json:"status" binding:"required,oneof=pending active inactive expired revoked"`
 }
+
+type ValidateLicenseRequest struct {
+	LicenseKey  string          `json:"license_key" binding:"required"`
+	ProductName string          `json:"product_name" binding:"required"`
+	Metadata    json.RawMessage `json:"metadata,omitempty" swaggertype:"object"`
+}
+
+type ValidateLicenseResponse struct {
+	IsValid bool `json:"is_valid"`
+
+	Status      *license.LicenseStatus `json:"status,omitempty"`
+	Reason      string                 `json:"reason,omitempty"`
+	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
+	AllowedData json.RawMessage        `json:"allowed_data,omitempty"`
+}
