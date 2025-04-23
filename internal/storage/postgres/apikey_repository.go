@@ -128,3 +128,66 @@ func (r *APIKeyRepository) UpdateLastUsed(ctx context.Context, id uuid.UUID, las
 	}
 	return nil
 }
+
+func (r *APIKeyRepository) List(ctx context.Context) ([]*apikey.APIKey, error) {
+	query := `
+		SELECT id, key_hash, prefix, description, product_id, is_enabled, created_at, last_used_at
+		FROM api_keys
+		ORDER BY created_at DESC
+	`
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		r.logger.Error("Failed to query list of api keys", zap.Error(err))
+		return nil, fmt.Errorf("db error listing api keys: %w", err)
+	}
+	defer rows.Close()
+
+	keys := make([]*apikey.APIKey, 0)
+	for rows.Next() {
+		var key apikey.APIKey
+		var productID sql.Null[uuid.UUID]
+		var lastUsed sql.NullTime
+
+		err := rows.Scan(
+			&key.ID, &key.KeyHash, &key.Prefix, &key.Description,
+			&productID, &key.IsEnabled, &key.CreatedAt, &lastUsed,
+		)
+		if err != nil {
+			r.logger.Error("Failed to scan api key row during list", zap.Error(err))
+			return nil, fmt.Errorf("db scan error listing api keys: %w", err)
+		}
+
+		if productID.Valid {
+			key.ProductID = productID.V
+		}
+		if lastUsed.Valid {
+			key.LastUsedAt = &lastUsed.Time
+		}
+
+		keys = append(keys, &key)
+	}
+
+	if err = rows.Err(); err != nil {
+		r.logger.Error("Error iterating api key rows", zap.Error(err))
+		return nil, fmt.Errorf("db iteration error listing api keys: %w", err)
+	}
+
+	return keys, nil
+}
+
+func (r *APIKeyRepository) Disable(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE api_keys SET is_enabled = FALSE WHERE id = $1`
+	cmdTag, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		r.logger.Error("Failed to disable api key", zap.String("id", id.String()), zap.Error(err))
+		return fmt.Errorf("%w: error disabling api key %s: %v", ierr.ErrAPIKeyUpdateFailed, id, err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to disable api key, but key was not found", zap.String("id", id.String()))
+		return ierr.ErrAPIKeyNotFound
+	}
+
+	r.logger.Info("API key disabled successfully", zap.String("id", id.String()))
+	return nil
+}

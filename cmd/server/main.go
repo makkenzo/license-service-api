@@ -70,11 +70,13 @@ func main() {
 
 	licenseService := service.NewLicenseService(licenseRepo, appLogger)
 	authService := service.NewAuthService(userRepoMock, &cfg.JWT, appLogger)
+	apiKeyService := service.NewAPIKeyService(apiKeyRepo, appLogger)
 
 	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
 	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
 	authHandler := handler.NewAuthHandler(authService, appLogger)
 	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
+	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService, appLogger)
 
 	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
 	apiKeyAuthMiddleware := middleware.APIKeyAuthMiddleware(apiKeyRepo, appLogger)
@@ -150,6 +152,13 @@ func main() {
 		dashboardRoutes.Use(authMiddleware)
 		{
 			dashboardRoutes.GET("/summary", dashboardHandler.GetSummary)
+		}
+		apiKeyRoutes := apiV1.Group("/apikeys")
+		apiKeyRoutes.Use(authMiddleware)
+		{
+			apiKeyRoutes.POST("", apiKeyHandler.Create)
+			apiKeyRoutes.GET("", apiKeyHandler.List)
+			apiKeyRoutes.DELETE("/:id", apiKeyHandler.Revoke)
 		}
 	}
 

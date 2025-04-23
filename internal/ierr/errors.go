@@ -18,4 +18,6 @@ var (
 	ErrTokenNoClaims      = errors.New("token contains no claims")
 	ErrTokenInvalidClaims = errors.New("token contains invalid claims type")
 	ErrAPIKeyNotFound     = errors.New("api key not found or disabled")
+
+	ErrAPIKeyUpdateFailed = errors.New("api key update failed")
 )
