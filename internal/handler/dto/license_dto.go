@@ -58,3 +58,21 @@ func NewLicenseResponse(lic *license.License) *LicenseResponse {
 	}
 	return resp
 }
+
+type ListLicensesRequest struct {
+	Status        *license.LicenseStatus `form:"status" binding:"omitempty,oneof=pending active inactive expired revoked"`
+	CustomerEmail *string                `form:"email" binding:"omitempty,email"`
+	ProductName   *string                `form:"product_name"`
+	Type          *string                `form:"type"`
+	Limit         int                    `form:"limit,default=20" binding:"omitempty,gte=0"`
+	Offset        int                    `form:"offset,default=0" binding:"omitempty,gte=0"`
+	SortBy        string                 `form:"sort_by,default=created_at"`
+	SortOrder     string                 `form:"sort_order,default=DESC" binding:"omitempty,oneof=ASC DESC"`
+}
+
+type PaginatedLicenseResponse struct {
+	Licenses   []*LicenseResponse `json:"licenses"`
+	TotalCount int64              `json:"totalCount"`
+	Limit      int                `json:"limit"`
+	Offset     int                `json:"offset"`
+}

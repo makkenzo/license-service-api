@@ -77,3 +77,34 @@ func (s *LicenseService) CreateLicense(ctx context.Context, req *dto.CreateLicen
 	s.logger.Info("License created successfully", zap.String("id", createdLicense.ID.String()), zap.String("key", createdLicense.LicenseKey))
 	return createdLicense, nil
 }
+
+func (s *LicenseService) ListLicenses(ctx context.Context, req *dto.ListLicensesRequest) ([]*license.License, int64, error) {
+	params := license.ListParams{
+		Status:        req.Status,
+		CustomerEmail: req.CustomerEmail,
+		ProductName:   req.ProductName,
+		Type:          req.Type,
+		Limit:         req.Limit,
+		Offset:        req.Offset,
+		SortBy:        req.SortBy,
+		SortOrder:     req.SortOrder,
+	}
+
+	if params.Limit <= 0 || params.Limit > 100 {
+		params.Limit = 20
+	}
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+
+	s.logger.Debug("Listing licenses with params", zap.Any("params", params))
+
+	licenses, totalCount, err := s.repo.List(ctx, params)
+	if err != nil {
+		s.logger.Error("Failed to list licenses via repository", zap.Error(err))
+		return nil, 0, fmt.Errorf("repository error during license listing: %w", err)
+	}
+
+	s.logger.Info("Licenses listed successfully", zap.Int("count", len(licenses)), zap.Int64("total", totalCount))
+	return licenses, totalCount, nil
+}

@@ -93,6 +93,7 @@ func main() {
 		licenseRoutes := apiV1.Group("/licenses")
 		{
 			licenseRoutes.POST("", licenseHandler.Create)
+			licenseRoutes.GET("", licenseHandler.List)
 		}
 	}
 

@@ -53,3 +53,35 @@ func (h *LicenseHandler) Create(c *gin.Context) {
 	responseDTO := dto.NewLicenseResponse(createdLicense)
 	c.JSON(http.StatusCreated, responseDTO)
 }
+
+func (h *LicenseHandler) List(c *gin.Context) {
+	h.logger.Debug("Received request to list licenses")
+	var req dto.ListLicensesRequest
+
+	if err := c.ShouldBindQuery(&req); err != nil {
+		h.logger.Warn("Failed to bind or validate query parameters", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid query parameters: " + err.Error()})
+		return
+	}
+
+	licenses, totalCount, err := h.service.ListLicenses(c.Request.Context(), &req)
+	if err != nil {
+		h.logger.Error("Service failed to list licenses", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve licenses"})
+		return
+	}
+
+	licenseResponses := make([]*dto.LicenseResponse, len(licenses))
+	for i, lic := range licenses {
+		licenseResponses[i] = dto.NewLicenseResponse(lic)
+	}
+
+	paginatedResponse := dto.PaginatedLicenseResponse{
+		Licenses:   licenseResponses,
+		TotalCount: totalCount,
+		Limit:      req.Limit,
+		Offset:     req.Offset,
+	}
+
+	c.JSON(http.StatusOK, paginatedResponse)
+}
