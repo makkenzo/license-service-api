@@ -15,6 +15,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const defaultExpiringPeriodDays = 30
+
 type LicenseService struct {
 	repo   license.Repository
 	logger *zap.Logger
@@ -287,4 +289,36 @@ func (s *LicenseService) ValidateLicense(ctx context.Context, req *dto.ValidateL
 	result.ResponseData = lic.Metadata
 
 	return result, nil
+}
+
+func (s *LicenseService) GetDashboardSummary(ctx context.Context) (*dto.DashboardSummaryResponse, error) {
+	s.logger.Info("Requesting dashboard summary data")
+
+	summaryData, err := s.repo.GetDashboardSummary(ctx, defaultExpiringPeriodDays)
+	if err != nil {
+		s.logger.Error("Failed to get dashboard summary from repository", zap.Error(err))
+		return nil, fmt.Errorf("repository error fetching dashboard summary: %w", err)
+	}
+
+	response := &dto.DashboardSummaryResponse{
+		TotalLicenses: summaryData.TotalCount,
+		StatusCounts:  summaryData.StatusCounts,
+		TypeCounts:    summaryData.TypeCounts,
+		ProductCounts: summaryData.ProductCounts,
+		ExpiringSoon: dto.ExpiringSoonSummary{
+			Count:      summaryData.ExpiringSoonCount,
+			PeriodDays: defaultExpiringPeriodDays,
+		},
+	}
+
+	if summaryData.NextToExpireKey != nil && summaryData.NextToExpireDate != nil && summaryData.NextToExpireProd != nil {
+		response.ExpiringSoon.NextToExpire = &dto.LicenseInfo{
+			LicenseKey:  *summaryData.NextToExpireKey,
+			ExpiresAt:   *summaryData.NextToExpireDate,
+			ProductName: *summaryData.NextToExpireProd,
+		}
+	}
+
+	s.logger.Info("Dashboard summary prepared successfully")
+	return response, nil
 }

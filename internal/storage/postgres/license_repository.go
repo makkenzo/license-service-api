@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgconn"
@@ -343,4 +345,125 @@ func (r *LicenseRepository) UpdateStatus(ctx context.Context, id uuid.UUID, stat
 		zap.String("new_status", string(status)),
 	)
 	return nil
+}
+
+func (r *LicenseRepository) GetDashboardSummary(ctx context.Context, expiringPeriodDays int) (*license.DashboardSummaryData, error) {
+	summary := &license.DashboardSummaryData{
+		StatusCounts:  make(map[license.LicenseStatus]int64),
+		TypeCounts:    make(map[string]int64),
+		ProductCounts: make(map[string]int64),
+	}
+	var err error
+
+	dbExecutor := r.db
+
+	err = dbExecutor.QueryRow(ctx, "SELECT COUNT(*) FROM licenses").Scan(&summary.TotalCount)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.logger.Error("Failed to get total license count", zap.Error(err))
+		return nil, fmt.Errorf("db error counting total licenses: %w", err)
+	}
+
+	rowsStatus, err := dbExecutor.Query(ctx, "SELECT status, COUNT(*) FROM licenses GROUP BY status")
+	if err != nil {
+		r.logger.Error("Failed to get license counts by status", zap.Error(err))
+		return nil, fmt.Errorf("db error counting by status: %w", err)
+	}
+	for rowsStatus.Next() {
+		var status license.LicenseStatus
+		var count int64
+		if err := rowsStatus.Scan(&status, &count); err != nil {
+			rowsStatus.Close()
+			r.logger.Error("Failed to scan status count row", zap.Error(err))
+			return nil, fmt.Errorf("db scan error for status counts: %w", err)
+		}
+		summary.StatusCounts[status] = count
+	}
+	rowsStatus.Close()
+	if err = rowsStatus.Err(); err != nil {
+		r.logger.Error("Error iterating status counts", zap.Error(err))
+		return nil, fmt.Errorf("db iteration error for status counts: %w", err)
+	}
+
+	rowsType, err := dbExecutor.Query(ctx, "SELECT type, COUNT(*) FROM licenses GROUP BY type")
+	if err != nil {
+		r.logger.Error("Failed to get license counts by type", zap.Error(err))
+		return nil, fmt.Errorf("db error counting by type: %w", err)
+	}
+	for rowsType.Next() {
+		var licType string
+		var count int64
+		if err := rowsType.Scan(&licType, &count); err != nil {
+			rowsType.Close()
+			r.logger.Error("Failed to scan type count row", zap.Error(err))
+			return nil, fmt.Errorf("db scan error for type counts: %w", err)
+		}
+		summary.TypeCounts[licType] = count
+	}
+	rowsType.Close()
+	if err = rowsType.Err(); err != nil {
+		r.logger.Error("Error iterating type counts", zap.Error(err))
+		return nil, fmt.Errorf("db iteration error for type counts: %w", err)
+	}
+
+	rowsProd, err := dbExecutor.Query(ctx, "SELECT product_name, COUNT(*) FROM licenses GROUP BY product_name")
+	if err != nil {
+		r.logger.Error("Failed to get license counts by product", zap.Error(err))
+		return nil, fmt.Errorf("db error counting by product: %w", err)
+	}
+	for rowsProd.Next() {
+		var prodName string
+		var count int64
+		if err := rowsProd.Scan(&prodName, &count); err != nil {
+			rowsProd.Close()
+			r.logger.Error("Failed to scan product count row", zap.Error(err))
+			return nil, fmt.Errorf("db scan error for product counts: %w", err)
+		}
+		summary.ProductCounts[prodName] = count
+	}
+	rowsProd.Close()
+	if err = rowsProd.Err(); err != nil {
+		r.logger.Error("Error iterating product counts", zap.Error(err))
+		return nil, fmt.Errorf("db iteration error for product counts: %w", err)
+	}
+
+	now := time.Now().UTC()
+	expiresSoonDate := now.AddDate(0, 0, expiringPeriodDays)
+
+	queryExpiringCount := `
+		SELECT COUNT(*) FROM licenses
+		WHERE status = $1 AND expires_at IS NOT NULL AND expires_at > $2 AND expires_at <= $3
+	`
+	err = dbExecutor.QueryRow(ctx, queryExpiringCount, license.StatusActive, now, expiresSoonDate).Scan(&summary.ExpiringSoonCount)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.logger.Error("Failed to get expiring soon count", zap.Error(err))
+		return nil, fmt.Errorf("db error counting expiring licenses: %w", err)
+	}
+
+	queryNextToExpire := `
+		SELECT license_key, expires_at, product_name FROM licenses
+		WHERE status = $1 AND expires_at IS NOT NULL AND expires_at > $2
+		ORDER BY expires_at ASC
+		LIMIT 1
+	`
+	var nextKey sql.NullString
+	var nextDate sql.NullTime
+	var nextProd sql.NullString
+	err = dbExecutor.QueryRow(ctx, queryNextToExpire, license.StatusActive, now).Scan(&nextKey, &nextDate, &nextProd)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.logger.Error("Failed to get next expiring license", zap.Error(err))
+		return nil, fmt.Errorf("db error finding next expiring license: %w", err)
+	}
+
+	if nextKey.Valid {
+		summary.NextToExpireKey = &nextKey.String
+	}
+	if nextDate.Valid {
+		summary.NextToExpireDate = &nextDate.Time
+	}
+	if nextProd.Valid {
+		summary.NextToExpireProd = &nextProd.String
+	}
+
+	r.logger.Info("Dashboard summary data retrieved successfully")
+	return summary, nil
 }

@@ -90,6 +90,7 @@ func main() {
 	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
 	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
 	authHandler := handler.NewAuthHandler(authService, appLogger)
+	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
 
 	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
 
@@ -112,6 +113,10 @@ func main() {
 			licenseRoutes.GET("/:id", licenseHandler.GetByID)
 			licenseRoutes.PATCH("/:id", licenseHandler.Update)
 			licenseRoutes.PATCH("/:id/status", licenseHandler.UpdateStatus)
+		}
+		dashboardRoutes := apiV1.Group("/dashboard")
+		{
+			dashboardRoutes.GET("/summary", dashboardHandler.GetSummary)
 		}
 	}
 
