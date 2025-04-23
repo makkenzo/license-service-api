@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -15,6 +16,7 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	Log      LogConfig
+	JWT      JWTConfig
 }
 
 type ServerConfig struct {
@@ -42,6 +44,11 @@ type LogConfig struct {
 	Level string `mapstructure:"level"`
 }
 
+type JWTConfig struct {
+	SecretKey string        `mapstructure:"secretKey"`
+	TokenTTL  time.Duration `mapstructure:"tokenTTL"`
+}
+
 func LoadConfig(configPath string) (*Config, error) {
 	err := godotenv.Load()
 	if err != nil {
@@ -63,6 +70,8 @@ func LoadConfig(configPath string) (*Config, error) {
 	viper.SetDefault("redis.db", "0")
 
 	viper.SetDefault("log.level", "info")
+
+	viper.SetDefault("jwt.tokenTTL", 1*time.Hour)
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -95,10 +104,19 @@ func LoadConfig(configPath string) (*Config, error) {
 	if err := viper.BindEnv("log.level", "LOG_LEVEL"); err != nil {
 		log.Printf("Warning: could not bind LOG_LEVEL: %v\n", err)
 	}
+	if err := viper.BindEnv("jwt.secretKey", "JWT_SECRET_KEY"); err != nil {
+		log.Printf("Warning: could not bind JWT_SECRET_KEY: %v\n", err)
+	}
 
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal configuration: %w", err)
+	}
+	if cfg.JWT.SecretKey == "" {
+		return nil, errors.New("JWT_SECRET_KEY is required in configuration")
+	}
+	if len(cfg.JWT.SecretKey) < 32 {
+		log.Println("Warning: JWT_SECRET_KEY should be at least 32 characters long for security.")
 	}
 
 	return &cfg, nil

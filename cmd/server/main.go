@@ -15,7 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/makkenzo/license-service-api/internal/config"
 	"github.com/makkenzo/license-service-api/internal/handler"
+	"github.com/makkenzo/license-service-api/internal/handler/middleware"
 	"github.com/makkenzo/license-service-api/internal/service"
+	"github.com/makkenzo/license-service-api/internal/storage/memstorage"
 	"github.com/makkenzo/license-service-api/internal/storage/postgres"
 	"github.com/makkenzo/license-service-api/internal/storage/redis"
 	"github.com/makkenzo/license-service-api/pkg/logger"
@@ -57,7 +59,10 @@ func main() {
 	defer redisClient.Close()
 
 	licenseRepo := postgres.NewLicenseRepository(dbPool, appLogger)
+	userRepoMock := memstorage.NewUserRepositoryMock()
+
 	licenseService := service.NewLicenseService(licenseRepo, appLogger)
+	authService := service.NewAuthService(userRepoMock, &cfg.JWT, appLogger)
 
 	router := gin.New()
 
@@ -84,11 +89,20 @@ func main() {
 
 	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
 	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
+	authHandler := handler.NewAuthHandler(authService, appLogger)
+
+	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
 
 	router.GET("/healthz", healthHandler.Check)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
+	authRoutes := router.Group("/api/v1/auth")
+	{
+		authRoutes.POST("/login", authHandler.Login)
+	}
+
 	apiV1 := router.Group("/api/v1")
+	apiV1.Use(authMiddleware)
 	{
 		licenseRoutes := apiV1.Group("/licenses")
 		{
