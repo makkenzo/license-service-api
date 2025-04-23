@@ -19,8 +19,6 @@ func NewRedisClient(ctx context.Context, cfg *config.RedisConfig, logger *zap.Lo
 
 	client := redis.NewClient(opts)
 
-	logger.Info("Connecting to Redis", zap.String("address", cfg.Addr), zap.Int("db", cfg.DB))
-
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

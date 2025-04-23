@@ -20,8 +20,6 @@ func NewPgxPool(ctx context.Context, cfg *config.DatabaseConfig, logger *zap.Log
 	pgxConfig.MinConns = int32(cfg.MaxIdleConns)
 	pgxConfig.MaxConnLifetime = cfg.ConnMaxLifetime
 
-	logger.Info("Connecting to PostgreSQL", zap.String("url", cfg.URL))
-
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
