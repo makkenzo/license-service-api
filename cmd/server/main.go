@@ -19,6 +19,7 @@ import (
 	"github.com/makkenzo/license-service-api/internal/service"
 	"github.com/makkenzo/license-service-api/internal/storage/memstorage"
 	"github.com/makkenzo/license-service-api/internal/storage/postgres"
+	apikeyRepoImpl "github.com/makkenzo/license-service-api/internal/storage/postgres"
 	"github.com/makkenzo/license-service-api/internal/storage/redis"
 	"github.com/makkenzo/license-service-api/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -60,6 +61,7 @@ func main() {
 
 	licenseRepo := postgres.NewLicenseRepository(dbPool, appLogger)
 	userRepoMock := memstorage.NewUserRepositoryMock()
+	apiKeyRepo := apikeyRepoImpl.NewAPIKeyRepository(dbPool, appLogger)
 
 	licenseService := service.NewLicenseService(licenseRepo, appLogger)
 	authService := service.NewAuthService(userRepoMock, &cfg.JWT, appLogger)
@@ -93,6 +95,7 @@ func main() {
 	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
 
 	authMiddleware := middleware.AuthMiddleware(authService, appLogger)
+	apiKeyAuthMiddleware := middleware.APIKeyAuthMiddleware(apiKeyRepo, appLogger)
 
 	router.GET("/healthz", healthHandler.Check)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
@@ -103,18 +106,21 @@ func main() {
 	}
 
 	apiV1 := router.Group("/api/v1")
-	apiV1.Use(authMiddleware)
 	{
 		licenseRoutes := apiV1.Group("/licenses")
 		{
+			licenseRoutes.POST("/validate", apiKeyAuthMiddleware, licenseHandler.Validate)
+
+			licenseRoutes.Use(authMiddleware)
+
 			licenseRoutes.POST("", licenseHandler.Create)
 			licenseRoutes.GET("", licenseHandler.List)
-			licenseRoutes.POST("/validate", licenseHandler.Validate)
 			licenseRoutes.GET("/:id", licenseHandler.GetByID)
 			licenseRoutes.PATCH("/:id", licenseHandler.Update)
 			licenseRoutes.PATCH("/:id/status", licenseHandler.UpdateStatus)
 		}
 		dashboardRoutes := apiV1.Group("/dashboard")
+		dashboardRoutes.Use(authMiddleware)
 		{
 			dashboardRoutes.GET("/summary", dashboardHandler.GetSummary)
 		}
