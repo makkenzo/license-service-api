@@ -211,6 +211,7 @@ func (r *LicenseRepository) List(ctx context.Context, params license.ListParams)
 
 func (r *LicenseRepository) buildOrderBy(sortBy, sortOrder string) (string, error) {
 	allowedSortBy := map[string]string{
+		"id":             "id",
 		"created_at":     "created_at",
 		"expires_at":     "expires_at",
 		"issued_at":      "issued_at",

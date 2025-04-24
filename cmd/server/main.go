@@ -82,6 +82,15 @@ func main() {
 	apiKeyAuthMiddleware := middleware.APIKeyAuthMiddleware(apiKeyRepo, appLogger)
 	errorMiddleware := middleware.ErrorHandlerMiddleware(appLogger)
 
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 5*time.Minute)
+	updatedCount, startupCheckErr := service.CheckAndExpireLicenses(startupCtx, licenseRepo, appLogger)
+	cancelStartup()
+	if startupCheckErr != nil {
+		sugarLogger.Errorf("Initial license expiration check failed: %v", startupCheckErr)
+	} else {
+		sugarLogger.Infof("Initial license expiration check completed. Updated %d licenses.", updatedCount)
+	}
+
 	router := gin.New()
 	router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return fmt.Sprintf("%s - [%s] \"%s %s %s %d %s \"%s\" %s\"\n",

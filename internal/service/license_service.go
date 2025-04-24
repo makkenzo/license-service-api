@@ -323,3 +323,68 @@ func (s *LicenseService) GetDashboardSummary(ctx context.Context) (*dto.Dashboar
 	s.logger.Info("Dashboard summary prepared successfully")
 	return response, nil
 }
+
+func CheckAndExpireLicenses(ctx context.Context, repo license.Repository, logger *zap.Logger) (int, error) {
+	log := logger.Named("StartupExpireCheck")
+	log.Info("Starting initial check for expired licenses...")
+
+	now := time.Now().UTC()
+	updatedCount := 0
+	offset := 0
+	limit := 500
+
+	for {
+
+		params := license.ListParams{
+			Status:    ptr(license.StatusActive),
+			Limit:     limit,
+			Offset:    offset,
+			SortBy:    "id",
+			SortOrder: "ASC",
+		}
+		activeLicenses, _, err := repo.List(ctx, params)
+		if err != nil {
+			log.Error("Failed to list active licenses during startup check", zap.Error(err))
+			return updatedCount, fmt.Errorf("repository error listing active licenses: %w", err)
+		}
+
+		if len(activeLicenses) == 0 {
+			log.Debug("No more active licenses found to check.")
+			break
+		}
+
+		foundExpiredInBatch := 0
+		for _, lic := range activeLicenses {
+			if lic.ExpiresAt.Valid && lic.ExpiresAt.Time.UTC().Before(now) {
+				log.Info("Found expired license during startup check, updating status",
+					zap.String("license_id", lic.ID.String()),
+					zap.Time("expires_at", lic.ExpiresAt.Time),
+				)
+				errUpdate := repo.UpdateStatus(ctx, lic.ID, license.StatusExpired)
+				if errUpdate != nil {
+					log.Error("Failed to update status for expired license during startup",
+						zap.String("license_id", lic.ID.String()),
+						zap.Error(errUpdate),
+					)
+				} else {
+					updatedCount++
+					foundExpiredInBatch++
+				}
+			}
+		}
+		log.Debug("Checked batch for expiration", zap.Int("batch_size", len(activeLicenses)), zap.Int("found_expired", foundExpiredInBatch), zap.Int("offset", offset))
+
+		if int64(len(activeLicenses)) < int64(limit) {
+			break
+		}
+
+		offset += limit
+	}
+
+	log.Info("Initial check for expired licenses finished.", zap.Int("total_updated", updatedCount))
+	return updatedCount, nil
+}
+
+func ptr[T any](v T) *T {
+	return &v
+}
