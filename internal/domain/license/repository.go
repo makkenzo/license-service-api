@@ -2,6 +2,7 @@ package license
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,4 +38,5 @@ type Repository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status LicenseStatus) error
 	Update(ctx context.Context, license *License) error
 	GetDashboardSummary(ctx context.Context, expiringPeriodDays int) (*DashboardSummaryData, error)
+	UpdateMetadata(ctx context.Context, id uuid.UUID, metadata json.RawMessage) error
 }

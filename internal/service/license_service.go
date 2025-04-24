@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -228,6 +229,15 @@ type ValidationResult struct {
 	ResponseData json.RawMessage
 }
 
+const (
+	MetaKeyDeviceID        = "device_id"
+	MetaKeyUserID          = "user_id"
+	MetaKeyIPAddress       = "ip_address"
+	MetaKeyLastValidatedAt = "last_validated_at"
+	MetaKeyFeatures        = "features"
+	MetaKeyLimits          = "limits"
+)
+
 func (s *LicenseService) ValidateLicense(ctx context.Context, req *dto.ValidateLicenseRequest) (*ValidationResult, error) {
 	s.logger.Info("Attempting to validate license key",
 		zap.String("license_key", req.LicenseKey),
@@ -273,21 +283,152 @@ func (s *LicenseService) ValidateLicense(ctx context.Context, req *dto.ValidateL
 		return result, nil
 	}
 
-	if lic.ExpiresAt.Valid && time.Now().UTC().After(lic.ExpiresAt.Time.UTC()) {
+	now := time.Now().UTC()
+	if lic.ExpiresAt.Valid && now.After(lic.ExpiresAt.Time.UTC()) {
 		s.logger.Info("License has expired (date check)",
 			zap.String("license_key", req.LicenseKey),
 			zap.Time("expires_at", lic.ExpiresAt.Time),
 		)
 		result.Reason = "expired"
 
+		go func(lId uuid.UUID, r license.Repository, l *zap.Logger) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			l.Info("Attempting background status update to expired", zap.String("license_id", lId.String()))
+			if err := r.UpdateStatus(bgCtx, lId, license.StatusExpired); err != nil {
+				l.Error("Background status update to expired failed", zap.String("license_id", lId.String()), zap.Error(err))
+			}
+		}(lic.ID, s.repo, s.logger)
+
 		return result, nil
+	}
+
+	var agentMeta map[string]interface{}
+	var licenseMeta map[string]interface{}
+	agentMetaValid := req.Metadata != nil && json.Unmarshal(req.Metadata, &agentMeta) == nil
+	licenseMetaValid := lic.Metadata != nil && json.Unmarshal(lic.Metadata, &licenseMeta) == nil
+
+	if licenseMetaValid {
+		licenseDeviceID, hasDeviceBinding := licenseMeta[MetaKeyDeviceID].(string)
+		licenseUserID, hasUserBinding := licenseMeta[MetaKeyUserID].(string)
+
+		if hasDeviceBinding && licenseDeviceID != "" {
+			if !agentMetaValid {
+				s.logger.Warn("Device ID required but not provided by agent", zap.String("license_key", req.LicenseKey))
+				result.Reason = "device_id_required"
+				return result, nil
+			}
+			agentDeviceID, agentHasDeviceID := agentMeta[MetaKeyDeviceID].(string)
+			if !agentHasDeviceID || agentDeviceID == "" {
+				s.logger.Warn("Device ID required but empty in agent request", zap.String("license_key", req.LicenseKey))
+				result.Reason = "device_id_required"
+				return result, nil
+			}
+			if agentDeviceID != licenseDeviceID {
+				s.logger.Warn("Device ID mismatch",
+					zap.String("license_key", req.LicenseKey),
+					zap.String("agent_device", agentDeviceID),
+					zap.String("license_device", licenseDeviceID),
+				)
+				result.Reason = "device_id_mismatch"
+				return result, nil
+			}
+		}
+
+		if hasUserBinding && licenseUserID != "" {
+			if !agentMetaValid {
+				s.logger.Warn("User ID required but not provided by agent", zap.String("license_key", req.LicenseKey))
+				result.Reason = "user_id_required"
+				return result, nil
+			}
+
+			agentUserID, agentHasUserID := agentMeta[MetaKeyUserID].(string)
+
+			if !agentHasUserID || agentUserID == "" {
+				s.logger.Warn("User ID required but empty in agent request", zap.String("license_key", req.LicenseKey))
+				result.Reason = "user_id_required"
+				return result, nil
+			}
+
+			if agentUserID != licenseUserID {
+				s.logger.Warn("User ID mismatch",
+					zap.String("license_key", req.LicenseKey),
+					zap.String("agent_user", agentUserID),
+					zap.String("license_user", licenseUserID),
+				)
+				result.Reason = "user_id_mismatch"
+				return result, nil
+			}
+		}
 	}
 
 	s.logger.Info("License validation successful", zap.String("license_key", req.LicenseKey))
 	result.IsValid = true
 	result.Reason = "valid"
 
-	result.ResponseData = lic.Metadata
+	if licenseMetaValid {
+		allowedDataMap := make(map[string]interface{})
+		if features, ok := licenseMeta[MetaKeyFeatures]; ok {
+			allowedDataMap[MetaKeyFeatures] = features
+		}
+		if limits, ok := licenseMeta[MetaKeyLimits]; ok {
+			allowedDataMap[MetaKeyLimits] = limits
+		}
+
+		if len(allowedDataMap) > 0 {
+			allowedBytes, errJson := json.Marshal(allowedDataMap)
+			if errJson == nil {
+				result.ResponseData = allowedBytes
+			} else {
+				s.logger.Error("Failed to marshal allowed_data", zap.String("license_key", req.LicenseKey), zap.Error(errJson))
+			}
+		}
+	}
+
+	updateData := make(map[string]interface{})
+	updateData[MetaKeyLastValidatedAt] = now
+
+	if agentMetaValid {
+		if agentDeviceID, ok := agentMeta[MetaKeyDeviceID].(string); ok && agentDeviceID != "" {
+		}
+		if agentIP, ok := agentMeta[MetaKeyIPAddress].(string); ok && agentIP != "" {
+			updateData["last_ip"] = agentIP
+		}
+	}
+
+	if len(updateData) > 0 {
+		go func(lId uuid.UUID, currentMeta []byte, dataToUpdate map[string]interface{}, r license.Repository, l *zap.Logger) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			l.Debug("Attempting background metadata update", zap.String("license_id", lId.String()))
+
+			mergedMetaMap := make(map[string]interface{})
+			if currentMeta != nil {
+				_ = json.Unmarshal(currentMeta, &mergedMetaMap)
+			}
+			for k, v := range dataToUpdate {
+				mergedMetaMap[k] = v
+			}
+
+			newMetaBytes, errMarshal := json.Marshal(mergedMetaMap)
+			if errMarshal != nil {
+				l.Error("Failed to marshal metadata for background update", zap.String("license_id", lId.String()), zap.Error(errMarshal))
+				return
+			}
+
+			if bytes.Equal(currentMeta, newMetaBytes) {
+				l.Debug("Metadata hasn't changed, skipping background update", zap.String("license_id", lId.String()))
+				return
+			}
+
+			if err := r.UpdateMetadata(bgCtx, lId, newMetaBytes); err != nil {
+				l.Error("Background metadata update failed", zap.String("license_id", lId.String()), zap.Error(err))
+			} else {
+				l.Info("Background metadata update successful", zap.String("license_id", lId.String()))
+			}
+
+		}(lic.ID, lic.Metadata, updateData, s.repo, s.logger)
+	}
 
 	return result, nil
 }

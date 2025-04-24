@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -468,4 +469,25 @@ func (r *LicenseRepository) GetDashboardSummary(ctx context.Context, expiringPer
 
 	r.logger.Info("Dashboard summary data retrieved successfully")
 	return summary, nil
+}
+
+func (r *LicenseRepository) UpdateMetadata(ctx context.Context, id uuid.UUID, metadata json.RawMessage) error {
+	query := `UPDATE licenses SET metadata = $1 WHERE id = $2`
+
+	cmdTag, err := r.db.Exec(ctx, query, metadata, id)
+	if err != nil {
+		r.logger.Error("Failed to update license metadata in database",
+			zap.String("id", id.String()),
+			zap.Error(err),
+		)
+		return fmt.Errorf("%w: error updating metadata for license %s: %v", ierr.ErrUpdateFailed, id, err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to update metadata, but license was not found", zap.String("id", id.String()))
+		return nil
+	}
+
+	r.logger.Info("License metadata updated successfully", zap.String("id", id.String()))
+	return nil
 }
