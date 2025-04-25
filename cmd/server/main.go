@@ -18,7 +18,6 @@ import (
 	"github.com/makkenzo/license-service-api/internal/handler/middleware"
 	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/service"
-	"github.com/makkenzo/license-service-api/internal/storage/memstorage"
 	"github.com/makkenzo/license-service-api/internal/storage/postgres"
 	apikeyRepoImpl "github.com/makkenzo/license-service-api/internal/storage/postgres"
 	"github.com/makkenzo/license-service-api/internal/storage/redis"
@@ -65,16 +64,18 @@ func main() {
 	defer redisClient.Close()
 
 	licenseRepo := postgres.NewLicenseRepository(dbPool, appLogger)
-	userRepoMock := memstorage.NewUserRepositoryMock()
 	apiKeyRepo := apikeyRepoImpl.NewAPIKeyRepository(dbPool, appLogger)
 
 	licenseService := service.NewLicenseService(licenseRepo, appLogger)
-	authService := service.NewAuthService(userRepoMock, &cfg.JWT, appLogger)
+	authService, err := service.NewAuthService(appCtx, &cfg.OIDC, appLogger)
+	if err != nil {
+		sugarLogger.Fatalf("Failed to initialize Authentication Service: %v", err)
+	}
+	sugarLogger.Info("Authentication Service initialized successfully.")
 	apiKeyService := service.NewAPIKeyService(apiKeyRepo, appLogger)
 
 	healthHandler := handler.NewHealthHandler(dbPool, redisClient, appLogger)
 	licenseHandler := handler.NewLicenseHandler(licenseService, appLogger)
-	authHandler := handler.NewAuthHandler(authService, appLogger)
 	dashboardHandler := handler.NewDashboardHandler(licenseService, appLogger)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService, appLogger)
 
@@ -137,11 +138,6 @@ func main() {
 
 	router.GET("/healthz", healthHandler.Check)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
-
-	authRoutes := router.Group("/api/v1/auth")
-	{
-		authRoutes.POST("/login", authHandler.Login)
-	}
 
 	apiV1 := router.Group("/api/v1")
 	{

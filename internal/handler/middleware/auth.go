@@ -1,18 +1,19 @@
 package middleware
 
 import (
-	"net/http"
+	"fmt"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/service"
 	"go.uber.org/zap"
 )
 
 const (
-	authorizationHeader = "Authorization"
-	bearerPrefix        = "Bearer "
-	userContextKey      = "userClaims"
+	authorizationHeader     = "Authorization"
+	bearerPrefix            = "Bearer "
+	zitadelClaimsContextKey = "zitadelClaims"
 )
 
 func AuthMiddleware(authService *service.AuthService, logger *zap.Logger) gin.HandlerFunc {
@@ -21,46 +22,50 @@ func AuthMiddleware(authService *service.AuthService, logger *zap.Logger) gin.Ha
 		authHeader := c.GetHeader(authorizationHeader)
 		if authHeader == "" {
 			log.Debug("Authorization header is missing")
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+			_ = c.Error(fmt.Errorf("%w: authorization header required", ierr.ErrUnauthorized))
+			c.Abort()
 			return
 		}
 
 		if !strings.HasPrefix(authHeader, bearerPrefix) {
 			log.Debug("Authorization header format is invalid", zap.String("header", authHeader))
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
+			_ = c.Error(fmt.Errorf("%w: invalid authorization header format", ierr.ErrUnauthorized))
+			c.Abort()
 			return
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, bearerPrefix)
 		if tokenString == "" {
 			log.Debug("Token is missing after Bearer prefix")
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token missing"})
+			_ = c.Error(fmt.Errorf("%w: token missing", ierr.ErrUnauthorized))
+			c.Abort()
 			return
 		}
 
 		claims, err := authService.ValidateToken(c.Request.Context(), tokenString)
 		if err != nil {
 			log.Warn("Token validation failed", zap.Error(err))
-
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			_ = c.Error(err)
+			c.Abort()
 			return
 		}
 
-		log.Debug("Token validated, setting user claims in context", zap.String("user_id", claims.UserID.String()), zap.String("role", claims.Role))
-		c.Set(userContextKey, claims)
+		log.Debug("Access Token validated, setting claims in context", zap.String("subject", claims.Subject))
+		c.Set(zitadelClaimsContextKey, claims)
 
 		c.Next()
 	}
 }
 
-func GetUserClaims(c *gin.Context) *service.Claims {
-	claims, exists := c.Get(userContextKey)
+func GetUserClaims(c *gin.Context) *service.ZitadelClaims {
+	value, exists := c.Get(zitadelClaimsContextKey)
 	if !exists {
 		return nil
 	}
-	userClaims, ok := claims.(*service.Claims)
+	claims, ok := value.(*service.ZitadelClaims)
 	if !ok {
+
 		return nil
 	}
-	return userClaims
+	return claims
 }

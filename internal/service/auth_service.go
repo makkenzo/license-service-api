@@ -2,121 +2,92 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/makkenzo/license-service-api/internal/config"
 	"github.com/makkenzo/license-service-api/internal/ierr"
-	"github.com/makkenzo/license-service-api/internal/storage/memstorage"
 	"go.uber.org/zap"
 )
 
+type ZitadelClaims struct {
+	Email             string                            `json:"email"`
+	EmailVerified     bool                              `json:"email_verified"`
+	PreferredUsername string                            `json:"preferred_username"`
+	Name              string                            `json:"name"`
+	GivenName         string                            `json:"given_name"`
+	FamilyName        string                            `json:"family_name"`
+	Locale            string                            `json:"locale"`
+	Roles             map[string]map[string]interface{} `json:"urn:zitadel:iam:org:project:id:317234470941884420:roles"`
+	Scope             string                            `json:"scope"`
+	ClientID          string                            `json:"client_id"`
+	Audience          []string                          `json:"aud"`
+	Subject           string                            `json:"sub"`
+}
+
 type AuthService struct {
-	userRepo  *memstorage.UserRepositoryMock
-	jwtConfig *config.JWTConfig
-	logger    *zap.Logger
+	keySet   oidc.KeySet
+	config   *config.OIDCConfig
+	logger   *zap.Logger
+	issuer   string
+	clientID string
 }
 
-func NewAuthService(userRepo *memstorage.UserRepositoryMock, jwtConfig *config.JWTConfig, logger *zap.Logger) *AuthService {
+func NewAuthService(ctx context.Context, cfg *config.OIDCConfig, logger *zap.Logger) (*AuthService, error) {
+	log := logger.Named("AuthService")
+	if cfg.IssuerURL == "" || cfg.ClientID == "" {
+		return nil, fmt.Errorf("OIDC IssuerURL and ClientID are required")
+	}
+
+	log.Info("Initializing OIDC provider", zap.String("issuer", cfg.IssuerURL))
+	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	if err != nil {
+		log.Error("Failed to create OIDC provider", zap.String("issuer", cfg.IssuerURL), zap.Error(err))
+		return nil, fmt.Errorf("oidc provider setup failed: %w", err)
+	}
+
+	var discoveryClaims struct {
+		JWKSURI string `json:"jwks_uri"`
+		Issuer  string `json:"issuer"`
+	}
+	if err := provider.Claims(&discoveryClaims); err != nil {
+		log.Error("Failed to get discovery claims", zap.Error(err))
+		return nil, fmt.Errorf("failed to get OIDC discovery claims: %w", err)
+	}
+
+	log.Info("Creating OIDC keyset from JWKS URI", zap.String("jwks_uri", discoveryClaims.JWKSURI))
+	keySet := oidc.NewRemoteKeySet(ctx, discoveryClaims.JWKSURI)
+
 	return &AuthService{
-		userRepo:  userRepo,
-		jwtConfig: jwtConfig,
-		logger:    logger.Named("AuthService"),
-	}
+		keySet:   keySet,
+		config:   cfg,
+		logger:   log,
+		issuer:   discoveryClaims.Issuer,
+		clientID: cfg.ClientID,
+	}, nil
 }
 
-type Claims struct {
-	UserID uuid.UUID `json:"user_id"`
-	Role   string    `json:"role"`
-	jwt.RegisteredClaims
-}
+func (s *AuthService) ValidateToken(ctx context.Context, rawToken string) (*ZitadelClaims, error) {
+	s.logger.Debug("Attempting to validate OIDC Access Token (JWT) using Verifier")
 
-func (s *AuthService) Login(ctx context.Context, username, password string) (string, error) {
-	s.logger.Info("Attempting login", zap.String("username", username))
+	verifier := oidc.NewVerifier(s.issuer, s.keySet, &oidc.Config{
+		ClientID: s.clientID,
+	})
 
-	u, err := s.userRepo.FindByUsername(ctx, username)
+	token, err := verifier.Verify(ctx, rawToken)
 	if err != nil {
-		if errors.Is(err, ierr.ErrUserNotFound) {
-			s.logger.Warn("Login failed: user not found", zap.String("username", username))
-			return "", ierr.ErrInvalidCredentials
-		}
-		s.logger.Error("Error finding user during login", zap.String("username", username), zap.Error(err))
-		return "", fmt.Errorf("internal error during login: %w", err)
+		s.logger.Warn("Failed to verify access token JWT", zap.Error(err))
+		return nil, fmt.Errorf("%w: %v", ierr.ErrInvalidToken, err)
 	}
 
-	if !memstorage.CheckPassword(u.PasswordHash, password) {
-		s.logger.Warn("Login failed: invalid password", zap.String("username", username))
-		return "", ierr.ErrInvalidCredentials
+	var claims ZitadelClaims
+	if err := token.Claims(&claims); err != nil {
+		s.logger.Error("Failed to extract claims from access token", zap.Error(err))
+		return nil, fmt.Errorf("%w: could not unmarshal access token claims: %v", ierr.ErrTokenInvalidClaims, err)
 	}
 
-	expirationTime := time.Now().Add(s.jwtConfig.TokenTTL)
-	claims := &Claims{
-		UserID: u.ID,
-		Role:   u.Role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(expirationTime),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-			Issuer:    "license-service",
-			Subject:   u.ID.String(),
-		},
-	}
+	claims.Subject = token.Subject
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	tokenString, err := token.SignedString([]byte(s.jwtConfig.SecretKey))
-	if err != nil {
-		s.logger.Error("Failed to sign JWT token", zap.Error(err))
-		return "", fmt.Errorf("failed to generate token: %w", err)
-	}
-
-	s.logger.Info("Login successful, token generated", zap.String("username", username), zap.String("user_id", u.ID.String()))
-	return tokenString, nil
-}
-
-func (s *AuthService) ValidateToken(ctx context.Context, tokenString string) (*Claims, error) {
-
-	keyFunc := func(token *jwt.Token) (interface{}, error) {
-
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			s.logger.Warn("Unexpected signing method in token", zap.Any("alg", token.Header["alg"]))
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-
-		return []byte(s.jwtConfig.SecretKey), nil
-	}
-
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, keyFunc)
-	if err != nil {
-		s.logger.Warn("Failed to parse JWT token", zap.Error(err))
-		if errors.Is(err, jwt.ErrTokenExpired) {
-			return nil, ierr.ErrInvalidToken
-		}
-		if errors.Is(err, jwt.ErrSignatureInvalid) {
-			return nil, ierr.ErrInvalidToken
-		}
-		return nil, ierr.ErrTokenParsingFailed
-	}
-
-	if !token.Valid {
-		s.logger.Warn("Invalid token received")
-		return nil, ierr.ErrInvalidToken
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok {
-		s.logger.Error("Token claims are not of expected type")
-		return nil, ierr.ErrTokenInvalidClaims
-	}
-
-	if claims == nil {
-		s.logger.Error("Token claims are nil after parsing")
-		return nil, ierr.ErrTokenNoClaims
-	}
-
-	s.logger.Debug("Token validated successfully", zap.String("user_id", claims.UserID.String()))
-	return claims, nil
+	s.logger.Info("Access Token validated successfully", zap.String("subject", claims.Subject), zap.String("client_id_in_token", claims.ClientID), zap.String("scope", claims.Scope))
+	return &claims, nil
 }

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -16,7 +15,7 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	Log      LogConfig
-	JWT      JWTConfig
+	OIDC     OIDCConfig
 }
 
 type ServerConfig struct {
@@ -49,6 +48,11 @@ type JWTConfig struct {
 	TokenTTL  time.Duration `mapstructure:"tokenTTL"`
 }
 
+type OIDCConfig struct {
+	IssuerURL string `mapstructure:"issuerUrl"`
+	ClientID  string `mapstructure:"clientId"`
+}
+
 func LoadConfig(configPath string) (*Config, error) {
 	err := godotenv.Load()
 	if err != nil {
@@ -70,8 +74,6 @@ func LoadConfig(configPath string) (*Config, error) {
 	viper.SetDefault("redis.db", "0")
 
 	viper.SetDefault("log.level", "info")
-
-	viper.SetDefault("jwt.tokenTTL", 1*time.Hour)
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -107,16 +109,16 @@ func LoadConfig(configPath string) (*Config, error) {
 	if err := viper.BindEnv("jwt.secretKey", "JWT_SECRET_KEY"); err != nil {
 		log.Printf("Warning: could not bind JWT_SECRET_KEY: %v\n", err)
 	}
+	if err := viper.BindEnv("oidc.issuerUrl", "ZITADEL_ISSUER_URL"); err != nil {
+		log.Printf("Warning: could not bind ZITADEL_ISSUER_URL: %v\n", err)
+	}
+	if err := viper.BindEnv("oidc.clientId", "ZITADEL_CLIENT_ID"); err != nil {
+		log.Printf("Warning: could not bind ZITADEL_CLIENT_ID: %v\n", err)
+	}
 
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal configuration: %w", err)
-	}
-	if cfg.JWT.SecretKey == "" {
-		return nil, errors.New("JWT_SECRET_KEY is required in configuration")
-	}
-	if len(cfg.JWT.SecretKey) < 32 {
-		log.Println("Warning: JWT_SECRET_KEY should be at least 32 characters long for security.")
 	}
 
 	return &cfg, nil

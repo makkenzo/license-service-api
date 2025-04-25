@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	apikeyRepo "github.com/makkenzo/license-service-api/internal/domain/apikey"
+	apikeyDomain "github.com/makkenzo/license-service-api/internal/domain/apikey"
 	"github.com/makkenzo/license-service-api/internal/ierr"
 	"github.com/makkenzo/license-service-api/internal/util"
 )
@@ -21,7 +21,7 @@ const (
 	apiKeyHeader = "X-API-Key"
 )
 
-func APIKeyAuthMiddleware(apiKeyRepo apikeyRepo.Repository, logger *zap.Logger) gin.HandlerFunc {
+func APIKeyAuthMiddleware(apiKeyRepo apikeyDomain.Repository, logger *zap.Logger) gin.HandlerFunc {
 	log := logger.Named("APIKeyAuthMiddleware")
 	return func(c *gin.Context) {
 		apiKeyFromHeader := c.GetHeader(apiKeyHeader)
@@ -49,7 +49,6 @@ func APIKeyAuthMiddleware(apiKeyRepo apikeyRepo.Repository, logger *zap.Logger) 
 				c.Abort()
 				return
 			}
-
 			log.Error("Failed to query API key repository", zap.String("prefix", prefix), zap.Error(err))
 			_ = c.Error(fmt.Errorf("%w: checking api key: %v", ierr.ErrInternalServer, err))
 			c.Abort()
@@ -65,16 +64,18 @@ func APIKeyAuthMiddleware(apiKeyRepo apikeyRepo.Repository, logger *zap.Logger) 
 			return
 		}
 
-		go func(id uuid.UUID, repo apikeyRepo.Repository, l *zap.Logger) {
+		go func(id uuid.UUID, repo apikeyDomain.Repository, l *zap.Logger) {
 			ctxAsync, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			errUpdate := repo.UpdateLastUsed(ctxAsync, id, time.Now().UTC())
 			if errUpdate != nil {
 				l.Error("Failed to update API key last used time asynchronously", zap.String("key_id", id.String()), zap.Error(errUpdate))
+			} else {
+				l.Debug("API key last used time updated asynchronously", zap.String("key_id", id.String()))
 			}
 		}(keyRecord.ID, apiKeyRepo, log)
 
-		log.Info("API key validated successfully", zap.String("prefix", prefix), zap.String("key_id", keyRecord.ID.String()))
+		log.Debug("API key validated successfully", zap.String("prefix", prefix), zap.String("key_id", keyRecord.ID.String()))
 		c.Next()
 	}
 }
